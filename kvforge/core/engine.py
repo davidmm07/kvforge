@@ -100,14 +100,18 @@ class LLMEngine:
     def _validate_prompt(self, prompt_token_ids: list[int]) -> None:
         """Reject bad prompts at the API boundary, where the context still exists.
 
-        An out-of-range token id is otherwise only noticed by ``nn.Embedding``,
-        several frames deep in the forward pass, as a bare
+        Every check here guards a failure that would otherwise surface deep in
+        the runtime as a confusing error. An out-of-range token id is only
+        noticed by ``nn.Embedding``, several frames down, as a bare
         ``IndexError: index out of range in self`` that names neither the token
-        nor the request. Two O(n) scans here cost nothing next to prefill and
-        turn that into an error that says what to fix.
+        nor the request. A prompt too large to schedule is worse: the request is
+        silently dropped and ``generate`` dies on a ``KeyError`` for its own id.
+        These scans cost nothing next to prefill and turn both into errors that
+        say what to fix.
         """
         if not prompt_token_ids:
             raise ValueError("prompt_token_ids is empty; a request needs at least one token")
+
         vocab_size = self.config.model.vocab_size
         lowest, highest = min(prompt_token_ids), max(prompt_token_ids)
         if lowest < 0 or highest >= vocab_size:
@@ -116,6 +120,23 @@ class LLMEngine:
                 f"token id {bad} is outside the model's vocabulary "
                 f"[0, {vocab_size}); check that the tokenizer and "
                 f"ModelConfig.vocab_size agree"
+            )
+
+        num_tokens = len(prompt_token_ids)
+        max_len = self.config.scheduler.max_model_len
+        if num_tokens > max_len:
+            raise ValueError(
+                f"prompt has {num_tokens} tokens but max_model_len is {max_len}; "
+                f"leave room for at least one generated token"
+            )
+        # Block 0 is the reserved null block, so it never holds real KV.
+        usable_slots = (self.config.cache.num_blocks - 1) * self.config.cache.block_size
+        if num_tokens > usable_slots:
+            raise ValueError(
+                f"prompt has {num_tokens} tokens but the KV cache holds at most "
+                f"{usable_slots} ({self.config.cache.num_blocks - 1} blocks x "
+                f"{self.config.cache.block_size}); it could never be scheduled. "
+                f"Raise CacheConfig.num_blocks or shorten the prompt"
             )
 
     def add_request(

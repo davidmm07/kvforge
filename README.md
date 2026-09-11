@@ -1,5 +1,7 @@
 # kvforge
 
+[![CI](https://github.com/davidmm07/kvforge/actions/workflows/ci.yml/badge.svg)](https://github.com/davidmm07/kvforge/actions/workflows/ci.yml)
+
 An LLM inference runtime built to be read: **paged KV cache**, **automatic
 prefix caching**, **continuous batching with chunked prefill**, **hybrid
 global + sliding-window attention**, **MoE dispatch**, and **speculative
@@ -14,7 +16,7 @@ change a single output token, and a benchmark measuring what it actually saves.
 git clone https://github.com/davidmm07/kvforge.git && cd kvforge
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"   # Windows: .venv\Scripts\pip
 python examples/quickstart.py     # guided tour
-python -m pytest                  # 81 tests
+python -m pytest                  # 86 tests
 python -m benchmarks.run_all      # regenerates docs/BENCHMARKS.md
 ```
 
@@ -179,7 +181,7 @@ resamples the argmax.
 
 ## Correctness
 
-81 tests, and the load-bearing ones are equivalence tests rather than smoke
+86 tests, and the load-bearing ones are equivalence tests rather than smoke
 tests. [`models/reference.py`](kvforge/models/reference.py) is an independent
 dense, cache-free implementation sharing only the weights; the engine must match
 it token for token across dense, sliding-window, hybrid and MoE models.
@@ -253,8 +255,10 @@ Named rather than hidden; full list with reasoning in
 - Random weights; no tokenizer, no checkpoint loader.
 - No tensor/pipeline parallelism, no quantisation.
 - Multimodal support is the cache-key half only: no encoder, no embedding merge.
-- The prefix cache keys on a 64-bit hash, so collisions are possible in
-  principle. This is the same trade production engines make, and worth stating.
+- The prefix cache keys on a 64-bit BLAKE2b digest with no token re-check on a
+  hit, so a collision is possible in principle. At 64 cryptographic bits the
+  risk is negligible, and it is the same trade production engines make, but
+  worth stating.
 
 Next steps in rough value order: a FlashAttention/SDPA backend behind the
 existing kernel interface, prefix caching for hybrid models, a checkpoint

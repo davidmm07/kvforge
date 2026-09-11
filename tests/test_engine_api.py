@@ -81,3 +81,50 @@ def test_generate_rejects_the_whole_batch_not_half_of_it():
         engine.generate([[1, 2], [3, VOCAB + 1]], SamplingParams(max_tokens=1))
     assert engine.requests == {}
     assert not engine.scheduler.waiting
+
+
+def test_prompt_longer_than_max_model_len_is_rejected():
+    engine = make_engine()  # max_model_len = 128
+    with pytest.raises(ValueError, match="max_model_len is 128"):
+        engine.add_request([1] * 129)
+
+
+def test_prompt_larger_than_the_kv_pool_is_rejected_clearly():
+    """The oversized-prompt case that used to crash with a bare KeyError.
+
+    With 32 blocks of 8 slots and block 0 reserved, the pool holds 248 tokens;
+    a 300-token prompt can never be scheduled and must be refused at the door,
+    not dropped silently and then surfaced as ``KeyError: 'req-0'`` from inside
+    ``generate``.
+    """
+    # max_model_len must be above the pool so the pool check is the one that fires.
+    engine = LLMEngine(
+        EngineConfig(
+            model=ModelConfig(
+                hidden_size=32, num_layers=1, num_heads=2, num_kv_heads=1,
+                ffn_hidden_size=64, vocab_size=VOCAB, seed=0,
+            ),
+            cache=CacheConfig(block_size=8, num_blocks=32),
+            scheduler=SchedulerConfig(max_num_seqs=2, max_num_batched_tokens=512, max_model_len=4096),
+        )
+    )
+    with pytest.raises(ValueError, match="KV cache holds at most 248"):
+        engine.generate([[1] * 300], SamplingParams(max_tokens=1))
+    assert engine.requests == {}
+    assert not engine.scheduler.waiting
+
+
+def test_a_prompt_that_exactly_fills_the_pool_is_still_accepted():
+    """The boundary must not over-reject: usable_slots tokens is legal."""
+    engine = LLMEngine(
+        EngineConfig(
+            model=ModelConfig(
+                hidden_size=32, num_layers=1, num_heads=2, num_kv_heads=1,
+                ffn_hidden_size=64, vocab_size=VOCAB, seed=0,
+            ),
+            cache=CacheConfig(block_size=8, num_blocks=6),  # 5 usable blocks = 40 slots
+            scheduler=SchedulerConfig(max_num_seqs=1, max_num_batched_tokens=64, max_model_len=64),
+        )
+    )
+    engine.add_request(list(range(40)), SamplingParams(max_tokens=1, ignore_eos=True))
+    assert len(engine.scheduler.waiting) == 1

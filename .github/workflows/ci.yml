@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install torch (CPU wheel)
+        # The CPU index avoids pulling the ~2.5 GB CUDA build on a CPU runner.
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install the package with dev extras
+        run: pip install -e ".[dev]"
+
+      - name: Run the test suite
+        run: pytest -q
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    # Advisory only: a CVE in a transitive dependency (e.g. torch) is not this
+    # project's code and should not turn the build red, but it should be visible.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the project so there is a real tree to audit
+        # Without installing the project, pip-audit would scan an empty
+        # environment and report "no vulnerabilities" while having checked
+        # nothing. Install the actual dependency tree first.
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -e ".[dev]"
+
+      - name: Audit installed dependencies
+        run: |
+          pip install pip-audit
+          pip-audit --skip-editable --desc

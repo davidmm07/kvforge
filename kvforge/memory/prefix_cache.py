@@ -18,6 +18,8 @@ request. See ``generate_block_hash_extra_keys``.
 
 from __future__ import annotations
 
+import hashlib
+import struct
 from typing import TYPE_CHECKING, Sequence
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -25,7 +27,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 #: Salt for the first block in a chain. Using a constant (rather than starting
 #: from ``None``) keeps hashes stable across processes, which matters if the
-#: cache is ever shared or persisted.
+#: cache is ever shared across workers or persisted.
 INIT_HASH = 0x9E3779B97F4A7C15
 
 
@@ -36,13 +38,31 @@ def hash_block_tokens(
 ) -> int:
     """Hash one block given its parent's hash.
 
-    We key the cache on the 64-bit hash rather than the token ids themselves,
+    We key the cache on a 64-bit digest rather than the token ids themselves,
     which is what production engines do: comparing full token tuples on every
-    lookup would put an O(block_size) memcmp on the critical path. The trade-off
-    is a birthday-bound collision risk, which is negligible at realistic cache
-    sizes but is a real (documented) property of the design, not an oversight.
+    lookup would put an O(block_size) memcmp on the critical path. The lookup
+    then trusts the digest, so its collision resistance *is* the cache's
+    isolation between unrelated prefixes; a collision would serve one request KV
+    computed from another's tokens.
+
+    We therefore use BLAKE2b, not Python's builtin ``hash()``. ``hash()`` salts
+    strings with ``PYTHONHASHSEED``, so any prompt with multimodal ``extra_keys``
+    would hash differently in every process, silently breaking a shared or
+    persisted cache; and its collisions are cheap to craft offline because the
+    integer-tuple path is unsalted. BLAKE2b is deterministic across processes and
+    cryptographically collision-resistant, which closes both. Inputs are
+    length-delimited so that no regrouping of tokens or keys can alias.
     """
-    return hash((parent_hash, tuple(token_ids), extra_keys))
+    h = hashlib.blake2b(digest_size=8)
+    h.update(parent_hash.to_bytes(8, "little"))
+    h.update(struct.pack("<Q", len(token_ids)))
+    h.update(struct.pack(f"<{len(token_ids)}q", *token_ids))
+    if extra_keys:
+        for key in extra_keys:
+            key_bytes = str(key).encode("utf-8")
+            h.update(struct.pack("<Q", len(key_bytes)))
+            h.update(key_bytes)
+    return int.from_bytes(h.digest(), "little")
 
 
 def generate_block_hash_extra_keys(

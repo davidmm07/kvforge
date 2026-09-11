@@ -41,6 +41,46 @@ def test_hash_chain_is_deterministic_and_prefix_stable():
     assert h2[: len(h1)] == h1
 
 
+def test_block_hash_is_deterministic_across_processes():
+    """The digest must not depend on PYTHONHASHSEED.
+
+    A shared or persisted prefix cache is only sound if two processes agree on
+    the key for the same tokens. Python's builtin hash() salts strings per
+    process, so this pins that hash_block_tokens does not use it. The expected
+    value is a fixed BLAKE2b digest; if it ever changes, cache keys changed and
+    any persisted cache is invalidated.
+    """
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "from kvforge.memory.prefix_cache import hash_block_tokens, INIT_HASH;"
+        "print(hash_block_tokens(INIT_HASH, [1, 2, 3], ('sha256:img',)))"
+    )
+    digests = []
+    for seed in ("0", "1", "12345"):
+        # Inherit the environment (PATH etc. must survive on Windows) and only
+        # override the hash seed, so the subprocess actually runs.
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        result = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env
+        )
+        assert result.returncode == 0, result.stderr
+        out = result.stdout.strip()
+        assert out and out.lstrip("-").isdigit(), f"unexpected output: {out!r}"
+        digests.append(out)
+    assert len(set(digests)) == 1, f"digest varied with PYTHONHASHSEED: {digests}"
+
+
+def test_length_delimiting_prevents_token_regrouping_collisions():
+    """Splitting the same tokens differently must not alias to one key."""
+    a = hash_block_tokens(INIT_HASH, [1, 2, 3])
+    b = hash_block_tokens(INIT_HASH, [1, 2])
+    c = hash_block_tokens(hash_block_tokens(INIT_HASH, [1]), [2, 3])
+    assert len({a, b, c}) == 3
+
+
 def test_partial_trailing_block_is_not_hashed():
     r = make_request(list(range(20)))  # 2 full blocks of 8, 4 tokens left over
     assert len(hash_request_tokens(r, block_size=8)) == 2

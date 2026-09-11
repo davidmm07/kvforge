@@ -352,7 +352,7 @@ is discarded on the way out, but a `NaN` there would propagate through the
 
 ## How correctness is established
 
-81 tests. The load-bearing ones are equivalence tests, not smoke tests.
+86 tests. The load-bearing ones are equivalence tests, not smoke tests.
 
 **Against an independent implementation.** `kvforge/models/reference.py` runs the
 same weights with dense attention and no cache at all, recomputing the whole
@@ -397,9 +397,11 @@ describing it.
 - **Random weights.** Correctness is by parity, not by generated text. Loading a
   real checkpoint means a weight loader and a tokenizer, not runtime changes.
 - **No tensor / pipeline parallelism.** Single process, single device.
-- **The prefix cache keys on a 64-bit hash**, so collisions are possible in
-  principle. This is what production engines do; the alternative is an
-  O(block_size) memcmp on every lookup. Worth naming rather than hiding.
+- **The prefix cache keys on a 64-bit BLAKE2b digest** and trusts it on a hit
+  with no token re-check, so a collision is possible in principle. At 64
+  cryptographic bits the risk is negligible; the alternative, an O(block_size)
+  memcmp on every lookup, is what production engines also decline to pay. Worth
+  naming rather than hiding.
 - **Multimodal support is the cache-key half only.** Placeholder spans hash
   correctly; there is no encoder and no embedding merge.
 - **No swap-to-CPU preemption**, by choice — recompute plus prefix caching is
